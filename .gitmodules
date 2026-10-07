@@ -1,0 +1,3 @@
+[submodule "huang-game-engine"]
+	path = huang-game-engine
+	url = https://github.com/parzival-hub/HuangEngine.git

@@ -1,0 +1,10 @@
+{
+  "source_run": "high_elo_continuous_20260928",
+  "source_checkpoint": "best.pt",
+  "source_update": 2240,
+  "observation_size": 5430,
+  "selection_metric": "league-match-point-rate",
+  "selection_score": 0.8550000000000001,
+  "evaluation_games": 100,
+  "evaluation_opponents": 5
+}

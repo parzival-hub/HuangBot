@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "huangbot"
+version = "0.7.0"
+description = "Pretrained HUANG bot with recurrent policy and optional lookahead"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24", "open_spiel>=2.0,<3", "torch>=2.9,<3"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+huangbot = "huangbot.cli:main"
+huang-viewer = "huang.viewer:main"
+
+[tool.setuptools]
+packages = ["huang", "huangbot"]
+package-dir = {huang = "huang-game-engine/huang", huangbot = "huangbot"}
+
+[tool.setuptools.package-data]
+huangbot = ["models/*.pt", "models/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = [".", "huang-game-engine"]
