@@ -9,7 +9,7 @@ from huang.playback import save_playback
 
 from .baselines import create_baseline
 from .checkpoints import load_checkpoint
-from .environment import HuangEnvironment, PUBLIC_SCORE_HISTORY_SIZE
+from .environment import HuangEnvironment, observation_options
 from .lookahead import InformationSetLookaheadAgent, LookaheadConfig
 from .model import RecurrentModelAgent
 from .recording import record_match
@@ -26,9 +26,11 @@ def main(argv=None):
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--stochastic-model", action="store_true")
     parser.add_argument("--max-player-decisions", type=int)
-    parser.add_argument("--lookahead-depth", type=int, default=0)
-    parser.add_argument("--lookahead-top-k", type=int, default=8)
-    parser.add_argument("--lookahead-simulations", type=int, default=16)
+    parser.add_argument("--lookahead-depth", type=int, default=2)
+    parser.add_argument("--lookahead-top-k", type=int, default=4)
+    parser.add_argument("--lookahead-simulations", type=int, default=4)
+    parser.add_argument("--lookahead-time-budget", type=float, default=3.0)
+    parser.add_argument("--no-adaptive-lookahead", action="store_true")
     args = parser.parse_args(argv)
     if args.threads <= 0:
         parser.error("--threads must be positive")
@@ -42,18 +44,19 @@ def main(argv=None):
     model = load_checkpoint(args.checkpoint, device=device) if "model" in names else None
     environment = HuangEnvironment(seed=args.seed, max_player_decisions=args.max_player_decisions)
     if model is not None:
-        if model.config.observation_size == environment.observation_size + PUBLIC_SCORE_HISTORY_SIZE:
-            environment = HuangEnvironment(
-                seed=args.seed,
-                max_player_decisions=args.max_player_decisions,
-                include_public_score_history=True,
-            )
+        environment = HuangEnvironment(
+            seed=args.seed,
+            max_player_decisions=args.max_player_decisions,
+            **observation_options(model.config.observation_size),
+        )
         if model.config.observation_size != environment.observation_size or model.config.num_actions != environment.num_actions:
             parser.error("checkpoint does not match the engine's observations and actions")
     model_agent = None
     if model is not None:
         if args.lookahead_depth:
-            config = LookaheadConfig(depth=args.lookahead_depth, top_k=args.lookahead_top_k, simulations=args.lookahead_simulations)
+            config = LookaheadConfig(depth=args.lookahead_depth, top_k=args.lookahead_top_k,
+                simulations=args.lookahead_simulations,
+                max_time_seconds=args.lookahead_time_budget, adaptive=not args.no_adaptive_lookahead)
             try:
                 config.validate()
             except ValueError as error:

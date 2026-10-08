@@ -11,11 +11,23 @@ import numpy as np
 
 from huang.action_codec import encode_action, legal_action_map
 from huang.snapshot import snapshot_from_open_spiel_state
+from .tile_belief import TileKnowledge, TileTracker, TILE_BELIEF_FEATURE_SIZE
 
 
 MAX_OBSERVATION_PLAYERS = 4
 PUBLIC_SCORE_COLORS = ("yellow", "red", "blue", "green", "white")
 PUBLIC_SCORE_HISTORY_SIZE = MAX_OBSERVATION_PLAYERS * len(PUBLIC_SCORE_COLORS)
+
+
+def observation_options(size: int, base_size: int = 5410):
+    """Decode supported append-only schemas, including old checkpoints."""
+    layouts = {base_size:(False,False),
+               base_size+PUBLIC_SCORE_HISTORY_SIZE:(True,False),
+               base_size+PUBLIC_SCORE_HISTORY_SIZE+TILE_BELIEF_FEATURE_SIZE:(True,True)}
+    if size not in layouts:
+        raise ValueError(f'unsupported observation size {size}')
+    scores,tiles = layouts[size]
+    return {'include_public_score_history':scores,'include_tile_belief':tiles}
 _PUBLIC_AWARD_PATTERN = re.compile(
     r"^P(?P<player>\d+) gained (?P<amount>\d+) "
     r"(?P<color>yellow|red|blue|green|white) VP$"
@@ -83,6 +95,7 @@ class DecisionContext:
     action_info: tuple[ActionInfo, ...]
     public_snapshot: dict[str, Any]
     player_decisions: int
+    tile_knowledge: TileKnowledge | None = None
 
 
 @dataclass(frozen=True)
@@ -99,7 +112,7 @@ class PolicyContext:
 class HuangEnvironment:
     """Resolve chance internally and expose only actual player decisions.
 
-    ``max_player_decisions`` is a optional match time limit. Reaching it marks
+    ``max_player_decisions`` is an optional decision limit. Reaching it marks
     the episode as truncated without changing the official HUANG engine state.
     """
 
@@ -107,11 +120,12 @@ class HuangEnvironment:
         self,
         *,
         players: int = 2,
-        short_game: bool = True,
+        short_game: bool = False,
         starting_player: int = -1,
         seed: Optional[int] = None,
         max_player_decisions: Optional[int] = None,
         include_public_score_history: bool = False,
+        include_tile_belief: bool = False,
     ):
         if not 2 <= players <= 4:
             raise ValueError("players must be between 2 and 4")
@@ -134,7 +148,8 @@ class HuangEnvironment:
         self.short_game = bool(short_game)
         self.starting_player = starting_player
         self.max_player_decisions = max_player_decisions
-        self.include_public_score_history = bool(include_public_score_history)
+        self.include_tile_belief = bool(include_tile_belief)
+        self.include_public_score_history = bool(include_public_score_history or include_tile_belief)
         self._pyspiel = pyspiel
         self._random = random.Random(seed)
         self._seed = seed
@@ -157,6 +172,7 @@ class HuangEnvironment:
             dtype=np.float32,
         )
         self._public_history_cursor = 0
+        self._tile_trackers = {}
 
     @property
     def num_actions(self) -> int:
@@ -166,7 +182,9 @@ class HuangEnvironment:
     def observation_size(self) -> int:
         base_size = self._game.observation_tensor_shape()[0]
         if self.include_public_score_history:
-            return base_size + PUBLIC_SCORE_HISTORY_SIZE
+            base_size += PUBLIC_SCORE_HISTORY_SIZE
+        if self.include_tile_belief:
+            base_size += TILE_BELIEF_FEATURE_SIZE
         return base_size
 
     @property
@@ -193,6 +211,7 @@ class HuangEnvironment:
         self.episode_index += 1
         self._public_score_history.fill(0.0)
         self._public_history_cursor = 0
+        self._tile_trackers.clear()
         self._resolve_chance_nodes()
         self._update_public_score_history()
         return self._make_step(np.zeros(self.players, dtype=np.float32))
@@ -282,6 +301,7 @@ class HuangEnvironment:
             action_info=action_info,
             public_snapshot=snapshot_from_open_spiel_state(self._state),
             player_decisions=self.player_decisions,
+            tile_knowledge=self.tile_knowledge(context.player),
         )
 
     def snapshot(self, *, title: Optional[str] = None) -> dict[str, Any]:
@@ -297,6 +317,17 @@ class HuangEnvironment:
                 "match_chance_events": self.chance_events,
             },
         )
+
+    def tile_knowledge(self, player: int):
+        """Persistent tile accounting using only this seat's observations."""
+        if self._state is None:
+            raise RuntimeError('reset() must be called before observing tiles')
+        if not 0 <= player < self.players:
+            raise ValueError('player is outside the environment')
+        if player not in self._tile_trackers:
+            self._tile_trackers[player] = TileTracker(player)
+        tracker = self._tile_trackers[player]
+        return tracker.observe(self._state.engine)
 
     def observation_for_player(self, player: int) -> np.ndarray:
         """Return the configured information-safe observation for one seat."""
@@ -314,6 +345,8 @@ class HuangEnvironment:
                 np.float32,
                 copy=False,
             )
+        if self.include_tile_belief:
+            observation = np.concatenate((observation,self.tile_knowledge(player).feature_vector())).astype(np.float32)
         observation.setflags(write=False)
         return observation
 

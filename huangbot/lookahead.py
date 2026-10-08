@@ -2,25 +2,27 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 import math
 import random
+import time
 from typing import Optional
 
 import numpy as np
 import torch
 
 from huang.action_codec import legal_action_map
-from huang.engine import CHANCE, TERMINAL
+from huang.engine import CHANCE, TERMINAL, Phase
 
 from .environment import (
     PUBLIC_SCORE_HISTORY_SIZE,
     DecisionContext,
     HuangEnvironment,
     public_score_history_from_engine,
+    observation_options,
 )
 from .model import HuangActorCritic, PlayerHiddenStates
+from .tile_belief import TileKnowledge, TileTracker
 
 
 @dataclass(frozen=True)
@@ -28,9 +30,12 @@ class LookaheadConfig:
     """Small search budget intended for selective tactical evaluation."""
 
     depth: int = 2
-    top_k: int = 8
-    simulations: int = 16
+    top_k: int = 4
+    simulations: int = 4
     prior_weight: float = 0.05
+    adaptive: bool = True
+    max_time_seconds: float = 3.0
+    max_resolution_steps: int = 256
 
     def validate(self) -> None:
         if self.depth <= 0:
@@ -41,6 +46,27 @@ class LookaheadConfig:
             raise ValueError("lookahead simulations must be positive")
         if not math.isfinite(self.prior_weight) or self.prior_weight < 0:
             raise ValueError("lookahead prior_weight must be finite and non-negative")
+        if not math.isfinite(self.max_time_seconds) or self.max_time_seconds <= 0:
+            raise ValueError('max_time_seconds must be finite and positive')
+        if self.max_resolution_steps <= 0:
+            raise ValueError('max_resolution_steps must be positive')
+
+    def budget(self, knowledge: TileKnowledge, *, conflict=False):
+        depth, simulations = self.depth, self.simulations
+        if self.adaptive:
+            if knowledge.bag_total <= 3:
+                depth, simulations = max(depth,12), max(simulations,64)
+            elif knowledge.bag_total <= 10:
+                depth, simulations = max(depth,8), max(simulations,32)
+            elif knowledge.bag_total <= 30:
+                depth, simulations = max(depth,4), max(simulations,16)
+            else:
+                depth, simulations = max(depth,2), max(simulations,4)
+            if knowledge.uncertainty > 0.8:
+                simulations = max(simulations,min(64,simulations*2))
+            if conflict:
+                depth, simulations = max(depth,4), max(simulations,16)
+        return depth, simulations
 
 
 @dataclass(frozen=True)
@@ -49,48 +75,40 @@ class LookaheadDiagnostics:
     mean_values: tuple[float, ...]
     selected_action: int
     leaf_batch_size: int
+    effective_depth: int = 0
+    simulations_per_candidate: int = 0
+    requested_simulations: int = 0
+    resolution_steps: int = 0
+    bag_total: int = 0
+    draw_probabilities: tuple[float, ...] = ()
+    uncertainty: float = 0.0
+    elapsed_seconds: float = 0.0
+    time_budget_reached: bool = False
 
 
-def determinize_hidden_tiles(engine, observer: int, random_source: random.Random):
+def determinize_hidden_tiles(engine, observer: int, random_source: random.Random,
+                             knowledge: TileKnowledge | None = None):
     """Clone a state and resample hidden hands from the unseen tile pool.
 
-    The observer's hand, public board, market and all public history remain
-    untouched.  Only the allocation between opponent hands and the bag changes.
+    The observer's hand, board, market and public history remain untouched.
+    Hidden hand, bag and discard colours come only from observed tile counts.
     """
     if not 0 <= observer < engine.players:
         raise ValueError("observer is outside the game")
+    knowledge = knowledge or TileTracker(observer).observe(engine)
+    if knowledge.observer != observer:
+        raise ValueError('tile knowledge belongs to a different player')
     sampled = engine.clone()
-    hidden_players = [player for player in range(engine.players) if player != observer]
-    hand_sizes = {
-        player: sum(sampled.hands[player].values()) for player in hidden_players
-    }
-    unseen = Counter(sampled.bag)
-    for player in hidden_players:
-        unseen.update(sampled.hands[player])
-        sampled.hands[player] = Counter()
-
-    for player in hidden_players:
-        for _ in range(hand_sizes[player]):
-            color = _sample_counter(unseen, random_source)
-            sampled.hands[player][color] += 1
-            unseen[color] -= 1
-            if unseen[color] == 0:
-                del unseen[color]
-    sampled.bag = Counter(unseen)
+    sampled.bag, sampled.hands, discarded = knowledge.sample_world(random_source)
+    public_scores = public_score_history_from_engine(engine).reshape(4,5)*30
+    for player in range(engine.players):
+        if player != observer:
+            sampled.private_history[player] = []
+            if discarded[player]:
+                sampled.private_history[player].append('replaced '+','.join(
+                    str(discarded[player][color]) for color in range(5)))
+            sampled.points[player] = [int(round(value)) for value in public_scores[player]]
     return sampled
-
-
-def _sample_counter(counts: Counter, random_source: random.Random):
-    total = sum(counts.values())
-    if total <= 0:
-        raise RuntimeError("cannot sample from an empty hidden tile pool")
-    target = random_source.randrange(total)
-    cumulative = 0
-    for item, count in sorted(counts.items(), key=lambda pair: int(pair[0])):
-        cumulative += count
-        if target < cumulative:
-            return item
-    raise AssertionError("hidden tile sample fell outside the pool")
 
 
 def _resolve_chance(engine, random_source: random.Random) -> None:
@@ -111,13 +129,13 @@ def _resolve_chance(engine, random_source: random.Random) -> None:
 
 def _model_observation(model: HuangActorCritic, engine, player: int) -> np.ndarray:
     base = np.asarray(engine.observation_tensor(player), dtype=np.float32)
-    if model.config.observation_size == base.size:
-        return base
-    if model.config.observation_size == base.size + PUBLIC_SCORE_HISTORY_SIZE:
-        return np.concatenate(
-            (base, public_score_history_from_engine(engine))
-        ).astype(np.float32, copy=False)
-    raise ValueError("model observation size is incompatible with lookahead state")
+    options = observation_options(model.config.observation_size,base.size)
+    pieces = [base]
+    if options['include_public_score_history']:
+        pieces.append(public_score_history_from_engine(engine))
+    if options['include_tile_belief']:
+        pieces.append(TileTracker(player).observe(engine).feature_vector())
+    return np.concatenate(pieces).astype(np.float32,copy=False)
 
 
 def _legal_context(model: HuangActorCritic, engine):
@@ -177,8 +195,14 @@ class InformationSetLookaheadAgent:
         context: DecisionContext,
         environment: HuangEnvironment,
     ) -> int:
+        started = time.monotonic()
         self.model.eval()
         player = context.player
+        source = environment.open_spiel_state.engine
+        knowledge = context.tile_knowledge or environment.tile_knowledge(player)
+        conflict = source.phase in (Phase.REVOLT_ATTACK,Phase.REVOLT_DEFEND,
+                                    Phase.WAR_CONTRIBUTE,Phase.WAR_TIE,Phase.WAR_REMOVE)
+        depth, simulations = self.config.budget(knowledge, conflict=conflict)
         observation = torch.tensor(
             np.asarray(context.observation),
             dtype=torch.float32,
@@ -200,22 +224,20 @@ class InformationSetLookaheadAgent:
         candidates = tuple(int(value) for value in legal[top.indices].cpu().tolist())
         priors = torch.softmax(top.values, dim=0).cpu().tolist()
 
-        engines = []
-        owners = []
-        hidden_states = []
         root_hidden = root_output.hidden_state.detach()
-        for candidate_index, action_id in enumerate(candidates):
-            for _ in range(self.config.simulations):
-                engine = determinize_hidden_tiles(
-                    environment.open_spiel_state.engine,
-                    player,
-                    self.random,
-                )
+        totals = [0.0]*len(candidates)
+        leaf_count = resolution_steps = completed = 0
+        deadline = started+self.config.max_time_seconds
+        for _simulation in range(simulations):
+            # All candidates face the same sampled hidden world in each round.
+            world = determinize_hidden_tiles(source,player,self.random,knowledge)
+            engines, hidden_states = [], []
+            for action_id in candidates:
+                engine = world.clone()
                 action_map = legal_action_map(engine)
                 engine.apply_action(action_map[action_id])
                 _resolve_chance(engine, self.random)
                 engines.append(engine)
-                owners.append(candidate_index)
                 hidden_states.append(
                     [
                         root_hidden.clone() if seat == player else self.model.initial_hidden(1)
@@ -223,14 +245,37 @@ class InformationSetLookaheadAgent:
                     ]
                 )
 
-        for _ply in range(1, self.config.depth):
+            values, leaves, extended = self._rollout(engines,hidden_states,player,depth)
+            for index,value in enumerate(values):
+                totals[index] += value
+            leaf_count = max(leaf_count,leaves)
+            resolution_steps = max(resolution_steps,extended)
+            completed += 1
+            if time.monotonic() >= deadline:
+                break
+        means = tuple(total/completed for total in totals)
+        ranked = [mean+self.config.prior_weight*prior for mean,prior in zip(means,priors)]
+        action = candidates[max(range(len(candidates)),key=ranked.__getitem__)]
+        self.last_diagnostics = LookaheadDiagnostics(
+            candidates,means,action,leaf_count,depth,completed,simulations,
+            resolution_steps,knowledge.bag_total,knowledge.draw_probabilities,
+            knowledge.uncertainty,time.monotonic()-started,
+            completed<simulations and time.monotonic()>=deadline)
+        return action
+
+    def _rollout(self, engines, hidden_states, player, depth):
+        ply = 1
+        while True:
             active = [
                 index
                 for index, engine in enumerate(engines)
                 if engine.current_actor() != TERMINAL
+                and (ply < depth or engine.phase != Phase.TURN)
             ]
             if not active:
                 break
+            if ply >= depth+self.config.max_resolution_steps:
+                raise RuntimeError('lookahead could not resolve a tactical phase safely')
             contexts = [_legal_context(self.model, engines[index]) for index in active]
             batch_hidden = torch.cat(
                 [
@@ -258,6 +303,7 @@ class InformationSetLookaheadAgent:
                 ].detach()
                 engines[state_index].apply_action(action_map[action_id])
                 _resolve_chance(engines[state_index], self.random)
+            ply += 1
 
         values = [0.0] * len(engines)
         nonterminal = [
@@ -291,22 +337,4 @@ class InformationSetLookaheadAgent:
                 actor = context_entry[0]
                 values[index] = float(estimate if actor == player else -estimate)
 
-        totals = [0.0] * len(candidates)
-        counts = [0] * len(candidates)
-        for owner, value in zip(owners, values):
-            totals[owner] += value
-            counts[owner] += 1
-        means = tuple(total / count for total, count in zip(totals, counts))
-        ranked = [
-            mean + self.config.prior_weight * prior
-            for mean, prior in zip(means, priors)
-        ]
-        selected_index = max(range(len(candidates)), key=ranked.__getitem__)
-        action = candidates[selected_index]
-        self.last_diagnostics = LookaheadDiagnostics(
-            candidates=candidates,
-            mean_values=means,
-            selected_action=action,
-            leaf_batch_size=len(nonterminal),
-        )
-        return action
+        return values,len(nonterminal),max(0,ply-depth)

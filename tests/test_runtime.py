@@ -1,10 +1,12 @@
 import torch
+import pytest
 
 from huang.playback import load_playback
 from huangbot import HuangEnvironment
 from huangbot.checkpoints import DEFAULT_CHECKPOINT, load_checkpoint
 from huangbot.cli import main
 from huangbot.model import RecurrentModelAgent
+from huangbot.environment import observation_options
 
 
 def test_bundled_weights_are_inference_only_and_select_legal_actions():
@@ -14,7 +16,7 @@ def test_bundled_weights_are_inference_only_and_select_legal_actions():
     model = load_checkpoint()
     assert not model.training
     assert all(not parameter.requires_grad for parameter in model.parameters())
-    environment = HuangEnvironment(seed=42, include_public_score_history=True)
+    environment = HuangEnvironment(seed=42, **observation_options(model.config.observation_size))
     step = environment.reset()
     assert step.observation.shape == (model.config.observation_size,)
     agent = RecurrentModelAgent(model, players=2, deterministic=True)
@@ -36,7 +38,7 @@ def test_cli_runs_bundled_model_and_records_playback(tmp_path):
     destination = tmp_path / "game.json"
     assert main([str(destination), "--device", "cpu", "--max-player-decisions", "4"]) == 0
     playback = load_playback(destination)
-    assert playback["metadata"]["agents"] == ["recurrent-model", "heuristic"]
+    assert playback["metadata"]["agents"] == ["information-set-lookahead", "heuristic"]
     assert playback["metadata"]["player_decisions"] == 4
     assert len(playback["frames"]) == 5
 
@@ -51,10 +53,12 @@ def test_lookahead_uses_bundled_observation_format(tmp_path):
     assert playback["metadata"]["agents"][0] == "information-set-lookahead"
 
 
-def test_loading_old_observation_format_is_supported(tmp_path):
+@pytest.mark.parametrize('observation_size', [5410, 5430])
+def test_loading_old_observation_format_is_supported(tmp_path, observation_size):
     from huangbot.model import HuangActorCritic, ModelConfig
 
-    model = HuangActorCritic(ModelConfig(encoder_width=8, encoder_layers=1, recurrent_hidden_size=4))
+    model = HuangActorCritic(ModelConfig(observation_size=observation_size,
+        encoder_width=8, encoder_layers=1, recurrent_hidden_size=4))
     checkpoint = tmp_path / "old.pt"
     torch.save({"format_version": 1, "model_config": vars(model.config), "model_state": model.state_dict()}, checkpoint)
     destination = tmp_path / "old-game.json"

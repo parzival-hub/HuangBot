@@ -41,7 +41,7 @@ def record_match(
         context = environment.decision_context()
         agent = agents[context.player]
         selector = getattr(agent, 'select_action_from_environment', None)
-        action_id = (selector(context, environment) if selector
+        action_id = (selector(context, environment) if selector is not None
                      else agent.select_action(context))
         action_by_id = {action.action_id: action for action in context.action_info}
         if action_id not in action_by_id:

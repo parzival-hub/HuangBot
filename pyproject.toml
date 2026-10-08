@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "huangbot"
-version = "0.7.0"
-description = "Pretrained HUANG bot with recurrent policy and optional lookahead"
+version = "0.8.0"
+description = "Pretrained full-game HUANG bot with tile beliefs and adaptive lookahead"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24", "open_spiel>=2.0,<3", "torch>=2.9,<3"]

@@ -1,10 +1,44 @@
 {
-  "source_run": "high_elo_continuous_20260928",
-  "source_checkpoint": "best.pt",
-  "source_update": 2240,
-  "observation_size": 5430,
-  "selection_metric": "league-match-point-rate",
-  "selection_score": 0.8550000000000001,
-  "evaluation_games": 100,
-  "evaluation_opponents": 5
+  "source_run": "full_game_tile_belief_unlimited_20261008",
+  "source_checkpoint": "step_000021466526.pt",
+  "source_update": 8000,
+  "observation_size": 5467,
+  "tile_belief_features": 37,
+  "short_game": false,
+  "selection_metric": "fresh-seed-round-robin-elo",
+  "selection_score": 28.22499981524646,
+  "selection_match_point_rate": 0.5625,
+  "screening_candidates": 9,
+  "screening_games": 144,
+  "confirmation_games": 96,
+  "evaluation_games": 64,
+  "evaluation_opponents": 2,
+  "evaluation_seed": 909200001,
+  "lookahead": {
+    "depth": 2,
+    "top_k": 4,
+    "simulations": 4,
+    "prior_weight": 0.05,
+    "adaptive": true,
+    "max_time_seconds": 0.25
+  },
+  "pair_results": [
+    {
+      "opponent": "full_game_8500",
+      "games": 32,
+      "wins": 18,
+      "draws": 0,
+      "losses": 14
+    },
+    {
+      "opponent": "full_game_7500",
+      "games": 32,
+      "wins": 18,
+      "draws": 0,
+      "losses": 14
+    }
+  ],
+  "weights_sha256": "d64949f36dd911a38c1890a2d07e528d5ccde10a2895601e7f5958819e0a68b7",
+  "tensor_weights_sha256": "df12a38d3ab0ce070b6c2bfcc96c30bfc55313082ae8785493d9ea71c516b201",
+  "paired_bootstrap_winner_fraction": 0.8895
 }
