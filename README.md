@@ -75,6 +75,13 @@ The bundled model uses the standard 5,410 observation features plus 20 features
 derived from publicly announced point awards. Other checkpoints may use only
 the standard features; the command-line runner detects both formats.
 
+## Playing in Zhanguo (remote mode)
+
+`huangbot-remote "<connect string>"` lets the bot play as an external player in the
+Zhanguo web game by polling its HTTP API once per second. It needs no OpenSpiel:
+install with `pip install --no-deps -e .` after `pip install numpy "torch>=2.9,<3"`.
+See [docs/REMOTE.md](docs/REMOTE.md) for setup, protocol and limitations.
+
 ## Bundled model
 
 `huangbot/models/best.pt` contains the weights of the best checkpoint selected
