@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Optional
 from huang.action_codec import NUM_DISTINCT_ACTIONS
 from huang.engine import HuangState
 from huangbot.environment import PUBLIC_SCORE_HISTORY_SIZE
+from huangbot.tile_belief import TILE_BELIEF_FEATURE_SIZE
 
 from . import __version__
 from .adapter import ZhanguoAdapter
@@ -26,7 +27,8 @@ from .client import (
     ZhanguoNetworkError,
 )
 from .fallback import safe_action
-from .protocol import PROTOCOL_VERSION
+from .protocol import PROTOCOL_VERSION, GameInformationError
+from .information import validate_ext_state, validate_view, mapping, required
 
 LOGGER = logging.getLogger("huangbot.remote")
 
@@ -108,6 +110,9 @@ class RemoteRunner:
         self.client = client
         self.config = config or RunnerConfig()
         self.use_score_history = self._check_model(model)
+        self.use_tile_belief = model.config.observation_size == (
+            HuangState.observation_tensor_size() + PUBLIC_SCORE_HISTORY_SIZE + TILE_BELIEF_FEATURE_SIZE
+        )
         self._agent_factory = agent_factory or self._default_agent_factory(model)
         self._stop = stop_event or threading.Event()
         self._sleep = sleep or (lambda seconds: self._stop.wait(seconds))
@@ -142,11 +147,15 @@ class RemoteRunner:
         base = HuangState.observation_tensor_size()
         if config.observation_size == base:
             return False
-        if config.observation_size == base + PUBLIC_SCORE_HISTORY_SIZE:
+        if config.observation_size in (
+            base + PUBLIC_SCORE_HISTORY_SIZE,
+            base + PUBLIC_SCORE_HISTORY_SIZE + TILE_BELIEF_FEATURE_SIZE,
+        ):
             return True
         raise ConfigError(
             f"checkpoint expects {config.observation_size} observation features; "
-            f"supported are {base} and {base + PUBLIC_SCORE_HISTORY_SIZE}"
+            f"supported are {base}, {base + PUBLIC_SCORE_HISTORY_SIZE} "
+            f"and {base + PUBLIC_SCORE_HISTORY_SIZE + TILE_BELIEF_FEATURE_SIZE}"
         )
 
     def _default_agent_factory(self, model) -> Callable[[int], Any]:
@@ -170,7 +179,7 @@ class RemoteRunner:
                 started = self._clock()
                 try:
                     finished = self._tick()
-                except (ConfigError, ZhanguoFatalError) as error:
+                except (ConfigError, ZhanguoFatalError, GameInformationError) as error:
                     LOGGER.error("fatal: %s", error)
                     return EXIT_CONFIG
                 except (ZhanguoNetworkError, ZhanguoApiError) as error:
@@ -223,6 +232,7 @@ class RemoteRunner:
 
     def _handle_state(self, state: Mapping[str, Any]) -> tuple[bool, bool]:
         """Returns ``(settled, finished)``; ``settled`` means the ETag may be reused."""
+        validate_ext_state(state)
         if state.get("protocol") != PROTOCOL_VERSION:
             raise ConfigError(f"unsupported protocol {state.get('protocol')!r}")
         status = state["status"]
@@ -238,6 +248,8 @@ class RemoteRunner:
                 LOGGER.error("this game cannot be played by the bot: %s", note)
                 self._incompatible_logged = note
             return True, False
+        validate_view(state["view"], int(state["seat"]),
+                      score_history=self.use_score_history, tile_belief=self.use_tile_belief)
         self._ensure_agent(state)
         if not state["yourTurn"]:
             self._turn_key = None
@@ -262,7 +274,8 @@ class RemoteRunner:
         ready, note = check_lobby(state["lobby"], int(state["seat"]))
         view = state.get("view")
         if ready and view is not None:
-            ready, note = is_supported_map(view.get("map"))
+            mapping(view, "state.view")
+            ready, note = is_supported_map(required(view, "map", "state.view"))
         return ready, note
 
     def _report_status(self, ready: bool, note: str) -> None:
@@ -289,6 +302,7 @@ class RemoteRunner:
                 self._agent,
                 seat=seat,
                 use_score_history=self.use_score_history,
+                use_tile_belief=self.use_tile_belief,
                 strict=self.config.strict,
             )
             self._players = players
@@ -327,6 +341,10 @@ class RemoteRunner:
             snapshot = adapter.snapshot_memory()
             try:
                 decision = adapter.decide(view, exclude=frozenset(excluded))
+            except GameInformationError as error:
+                adapter.restore_memory(snapshot)
+                self._dumper.dump("missing-game-information", view, version, error)
+                raise
             except Exception as error:
                 adapter.restore_memory(snapshot)
                 LOGGER.warning("model path failed (%s: %s)", type(error).__name__, error)
@@ -383,6 +401,9 @@ class RemoteRunner:
     def _refetch(self, state: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
         fresh = self.client.get_state().state
         assert fresh is not None
+        validate_ext_state(fresh)
+        if fresh["protocol"] != PROTOCOL_VERSION:
+            raise ConfigError(f"unsupported protocol {fresh['protocol']!r}")
         if fresh["status"] != "playing" or not fresh["yourTurn"]:
             return None
         self._turn_key = (fresh["gameId"], fresh["version"])

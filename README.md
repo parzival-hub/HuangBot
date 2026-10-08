@@ -106,6 +106,14 @@ Zhanguo web game by polling its HTTP API once per second. It needs no OpenSpiel:
 install with `pip install --no-deps -e .` after `pip install numpy "torch>=2.9,<3"`.
 See [docs/REMOTE.md](docs/REMOTE.md) for setup, protocol and limitations.
 
+Remote mode supports the bundled model 8000 (5467 inputs). The server must
+provide the complete public score and tile histories, including the bot's own
+discarded colours when exchanging tiles, as described in
+[the required-information contract](docs/REMOTE.md#required-tile-information-for-model-8000).
+Missing or inconsistent required information stops the bot with an explicit
+error; it does not send a fallback move. Remote play currently uses the neural
+policy without lookahead.
+
 ## Bundled model
 
 `huangbot/models/best.pt` contains checkpoint **8000** from

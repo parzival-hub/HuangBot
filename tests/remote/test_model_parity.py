@@ -10,6 +10,7 @@ from huang.engine import HuangState
 from huangbot.environment import ActionInfo, DecisionContext
 from huangbot.model import RecurrentModelAgent
 from huangbot.remote.adapter import ZhanguoAdapter
+from huangbot.tile_belief import TileTracker
 
 
 def native_context(state: HuangState, seat: int) -> DecisionContext:
@@ -17,7 +18,8 @@ def native_context(state: HuangState, seat: int) -> DecisionContext:
     legal = legal_action_map(state)
     mask = np.zeros(NUM_DISTINCT_ACTIONS, dtype=np.bool_)
     mask[list(legal)] = True
-    observation = np.concatenate([state.observation_tensor(seat), public_history_scores(state)]).astype(np.float32)
+    observation = np.concatenate([state.observation_tensor(seat), public_history_scores(state),
+                                  TileTracker(seat).observe(state).feature_vector()]).astype(np.float32)
     return DecisionContext(
         player=seat,
         observation=observation,
@@ -35,7 +37,7 @@ def test_adapter_and_native_environment_drive_the_model_identically(real_model):
     resolve_chance(state, rng)
     native = RecurrentModelAgent(real_model, players=2, deterministic=True)
     remote = RecurrentModelAgent(real_model, players=2, deterministic=True)
-    adapters = [ZhanguoAdapter(remote, seat=seat, use_score_history=True) for seat in (0, 1)]
+    adapters = [ZhanguoAdapter(remote, seat=seat, use_score_history=True, use_tile_belief=True) for seat in (0, 1)]
     compared = 0
     while not state.game_over and compared < 120:
         seat = state.current_actor()

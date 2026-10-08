@@ -14,7 +14,7 @@ def test_cli_plays_a_whole_game_and_reports_the_documented_agent_string(tmp_path
         code = main([connect_string(mock), "--interval", "0.01", "--min-think", "0", "--debug-dir", str(tmp_path)])
     assert code == 0
     assert mock.status == "finished"
-    assert mock.status_posts[0]["agent"] == "huangbot-remote 0.1 (high_elo_continuous_20260928)"
+    assert mock.status_posts[0]["agent"] == "huangbot-remote 0.1 (full_game_tile_belief_unlimited_20261008)"
     assert mock.codes[("action", 400)] == 0
     assert list(tmp_path.iterdir()) == []  # nothing went wrong, nothing dumped
     assert mock.token not in capsys.readouterr().err
@@ -42,7 +42,7 @@ def test_cli_rejects_nonsense_options(capsys):
 
 
 def test_checkpoint_label_prefers_the_provenance_of_the_bundled_model(tmp_path):
-    assert checkpoint_label(None) == "high_elo_continuous_20260928"
+    assert checkpoint_label(None) == "full_game_tile_belief_unlimited_20261008"
     assert checkpoint_label(tmp_path / "custom.pt") == "custom"
 
 

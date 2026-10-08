@@ -32,6 +32,45 @@ GOLDEN_ROWS = [
     "##~~~~~~...####",
 ]
 AWARD = re.compile(r"^P(\d+) gained (\d+) (yellow|red|blue|green|white) VP$")
+COORDINATE_CELLS = {board.coordinate_name(cell): cell for cell in range(board.NUM_CELLS)}
+
+
+def _tile_history(state, viewer):
+    """Seat-filtered wire ledger, derived independently from engine events."""
+    replacements = iter(line for line in state.private_history[viewer] if line.startswith("replaced "))
+    events = []
+    for line in state.public_history:
+        placed = re.match(r"^P(\d+) placed (\w+) tile at (.+)$", line)
+        market = re.match(r"^P(\d+) took (\w+) from market slot (\d+)$", line)
+        replace = re.match(r"^P(\d+) replaced (\d+) hidden tile\(s\)$", line)
+        if placed:
+            player, name, coordinate = placed.groups()
+            events.append({"kind": "place", "player": int(player), "color": name,
+                           "space": COORDINATE_CELLS[coordinate]})
+        elif market:
+            player, name, slot = market.groups()
+            events.append({"kind": "market", "player": int(player), "color": name, "slot": int(slot)})
+        elif replace:
+            player, count = map(int, replace.groups())
+            event = {"kind": "replace", "player": player, "count": count}
+            if player == viewer:
+                private = next(replacements)
+                counts = list(map(int, private[len("replaced "):].split(",")))
+                event["colors"] = [name for name, amount in zip(COLORS, counts) for _ in range(amount)]
+            events.append(event)
+        else:
+            for kind, pattern in (
+                ("riot", r"^P(\d+) caused a riot with (\d+) blue tile"),
+                ("pagoda", r"^P(\d+) paid (\d+) green tile"),
+                ("revolt", r"^P(\d+) committed (\d+) yellow tile"),
+                ("war", r"^P(\d+) supported war side \d+ with (\d+) red tile"),
+            ):
+                match = re.match(pattern, line)
+                if match:
+                    player, count = map(int, match.groups())
+                    events.append({"kind": kind, "player": player, "count": count})
+                    break
+    return {"version": 1, "complete": True, "events": events}
 
 
 def winning_red_cells(state: HuangState) -> list[int]:
@@ -227,6 +266,8 @@ def engine_to_view(state: HuangState, viewer: int) -> dict:
         "war": _war_data(state),
         "unification": None,
         "log": _log(state),
+        "logComplete": True,
+        "tileHistory": _tile_history(state, viewer),
         "gameOver": None,
         "lastPlaced": [],
         "bagCount": state.bag_total,

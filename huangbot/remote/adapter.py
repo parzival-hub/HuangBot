@@ -20,6 +20,8 @@ from .protocol import (
 )
 from .score_history import public_score_history
 from .view_state import build_shadow_state, pagoda_ids, sorted_triangle
+from .information import fail, validate_view
+from .tile_history import tile_knowledge
 
 
 @dataclass(frozen=True)
@@ -44,11 +46,15 @@ class ZhanguoAdapter:
         *,
         seat: int,
         use_score_history: bool,
+        use_tile_belief: bool = False,
         strict: bool = False,
     ):
         self.agent = agent
         self.seat = seat
-        self.use_score_history = use_score_history
+        self.use_score_history = use_score_history or use_tile_belief
+        self.use_tile_belief = use_tile_belief
+        self._tile_history = None
+        self._score_history = None
         self.strict = strict
         self.player_decisions = 0
 
@@ -60,6 +66,8 @@ class ZhanguoAdapter:
     def reset_episode(self) -> None:
         self.agent.reset_episode()
         self.player_decisions = 0
+        self._tile_history = None
+        self._score_history = None
 
     def snapshot_memory(self):
         """Copy of this seat's recurrent state, to undo a discarded decision."""
@@ -71,6 +79,7 @@ class ZhanguoAdapter:
     # -- deciding ------------------------------------------------------
 
     def decide(self, view: Mapping[str, Any], *, exclude: frozenset[int] = frozenset()) -> Decision:
+        validate_view(view, self.seat, score_history=self.use_score_history, tile_belief=self.use_tile_belief)
         state = build_shadow_state(view, seat=self.seat, strict=self.strict)
         pending = view.get("pending")
         if pending and pending["kind"] == "warRemove":
@@ -97,9 +106,29 @@ class ZhanguoAdapter:
         mask[list(legal)] = True
         observation = state.observation_tensor(self.seat)
         if self.use_score_history:
-            observation = np.concatenate(
-                [observation, public_score_history(view, state.players)]
+            validate_view(view, self.seat, score_history=True, tile_belief=self.use_tile_belief)
+            scores = public_score_history(view, state.players)
+            public_gains = tuple(
+                (gain["p"], gain["color"], gain["n"])
+                for entry in view["log"] for gain in entry.get("vp", [])
             )
+            self._check_history_prefix(self._score_history, public_gains, "view.log")
+            own_totals = [sum(n for p, color, n in public_gains if p == self.seat and color == name)
+                          for name in COLOR_NAMES]
+            if own_totals != state.points[self.seat]:
+                fail("view.log", "public point awards do not match the bot's own points")
+            self._score_history = public_gains
+            observation = np.concatenate(
+                [observation, scores]
+            )
+        knowledge = None
+        if self.use_tile_belief:
+            knowledge, history = tile_knowledge(state, view, self.seat)
+            if self._tile_history is not None:
+                for before, after in zip(self._tile_history, history):
+                    self._check_history_prefix(before, after, "view.tileHistory.events")
+            self._tile_history = history
+            observation = np.concatenate([observation, knowledge.feature_vector()])
         observation = observation.astype(np.float32, copy=False)
         observation.setflags(write=False)
         mask.setflags(write=False)
@@ -114,7 +143,13 @@ class ZhanguoAdapter:
             ),
             public_snapshot=snapshot_from_engine(state),
             player_decisions=self.player_decisions,
+            tile_knowledge=knowledge,
         )
+
+    @staticmethod
+    def _check_history_prefix(before, after, path):
+        if before is not None and tuple(after[:len(before)]) != before:
+            fail(path, "history was truncated or previously received events were changed")
 
     def _choose(
         self, state: HuangState, view: Mapping[str, Any], exclude: frozenset[int]
@@ -124,9 +159,10 @@ class ZhanguoAdapter:
             for action_id, action in legal_action_map(state).items()
             if action_id not in exclude
         }
+        context = self.make_context(state, view, legal)
         if not legal:
             raise NoLegalActionError("no legal action left after exclusions")
-        action_id = int(self.agent.select_action(self.make_context(state, view, legal)))
+        action_id = int(self.agent.select_action(context))
         if action_id not in legal:
             raise NoLegalActionError(f"agent chose action {action_id} outside the legal set")
         return action_id, legal[action_id]

@@ -25,6 +25,7 @@ def test_module_list_matches_the_documented_layout():
     assert names == {
         "__main__", "adapter", "board_check", "cli", "client", "fallback",
         "protocol", "runner", "score_history", "view_state",
+        "information", "tile_history",
     }
 
 

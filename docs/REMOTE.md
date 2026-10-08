@@ -79,7 +79,7 @@ by itself when the game is finished.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--checkpoint PATH` | bundled `best.pt` | other compatible weights (5410 or 5430 inputs) |
+| `--checkpoint PATH` | bundled model 8000 | other compatible weights (5410, 5430 or 5467 inputs) |
 | `--device cpu\|cuda\|auto` | `cpu` | where the model runs |
 | `--threads N` | 1 | torch threads |
 | `--interval S` | 1.0 | seconds between polls |
@@ -92,7 +92,7 @@ by itself when the game is finished.
 
 Exit codes: `0` game finished, `1` `--max-errors` reached, `2` usage or
 configuration error (bad connect string, unusable checkpoint, wrong token, game
-not found, unsupported protocol version), `130` Ctrl+C.
+not found, unsupported protocol version, missing required game information), `130` Ctrl+C.
 
 ### Log lines
 
@@ -124,8 +124,11 @@ messages.
   Not counted as an error.
 * **400 rejected** by the game's rules engine: that action id is excluded, the
   GRU memory is rolled back and the model decides again (up to 3 attempts).
+* **Missing or inconsistent game information**: `GameInformationError` identifies
+  the field, the runner stops with exit code 2 and sends no fallback action.
+  This applies regardless of `--strict` and `--max-errors`.
 * **Fallback**: after 3 rejections, or on any exception inside the model path
-  (`ShadowStateError`, `TranslationError`, ...), the most passive legal answer
+  other than `GameInformationError` (`TranslationError`, model failure, ...), the most passive legal answer
   derived from the view alone is sent (pass / decline / commit nothing /
   first candidates), so a game never hangs. It is logged at WARNING and counted.
   If even that is rejected, the runner logs ERROR and keeps polling; a human can
@@ -151,6 +154,8 @@ copied to `tests/remote/fixtures/zhanguo/` to become a regression test (see
 | `board_check.py` | the one supported board; map/player-count compatibility |
 | `view_state.py` | `build_shadow_state(view, seat=...)` -> `HuangState` |
 | `score_history.py` | the 20 public-score observation features |
+| `information.py` | required game-view fields, types and completeness checks |
+| `tile_history.py` | the 37 trained tile-belief features from the visible tile ledger |
 | `adapter.py` | `ZhanguoAdapter.decide(view)`: view -> `DecisionContext` -> agent -> Zhanguo action |
 | `fallback.py` | `safe_action(view)` |
 | `client.py` | standard-library HTTP client, ETag, backoff |
@@ -170,7 +175,66 @@ score history, summed from `view.log[*].vp` and divided by 30 once.
 
 **Observation size.** A checkpoint with 5430 inputs gets the 20 score-history
 features appended (as `HuangEnvironment(include_public_score_history=True)`
-does); one with 5410 does not; any other size refuses to start.
+does); one with 5410 does not. Model 8000 has 5467 inputs: the same 5430
+features followed by the 37 features from `TileKnowledge.feature_vector()`.
+Other sizes refuse to start. All public-score models require `logComplete: true`
+and the complete `log[*].vp` history. Own public awards must match the bot's
+own points; previously received score events cannot disappear or change.
+
+### Required tile information for model 8000
+
+The server must explicitly supply `options.shortGame` and the following
+seat-filtered ledger in each playing `GameView`. These fields extend protocol
+v1; a server that only implements the older view must add them before model
+8000 can play. Merely padding an observation to 5467 is not supported.
+
+```json
+{
+  "options": {"shortGame": false},
+  "logComplete": true,
+  "log": [],
+  "tileHistory": {
+    "version": 1,
+    "complete": true,
+    "events": []
+  }
+}
+```
+
+Empty histories are valid only before the corresponding events have happened.
+`complete: true` means every tile event since setup is included, in chronological
+order, even when a tile was subsequently removed from the board. The seven
+initial yellow capitals are implicit and must not be logged as player placements.
+Optional short-game removals are implicit, with unknown colours. Do not log bag
+draw colours or the opponent's private replacement colours.
+
+| Event `kind` | Required fields in addition to `kind` and zero-based `player` |
+| --- | --- |
+| `place` | `color`, `space`; every placed tile, including blue chains and war-triggering tiles |
+| `market` | `color`, `slot`; every tile actually taken from the public market |
+| `riot` | `count`; blue tiles paid from the hand (1 or 2) |
+| `pagoda` | `count`; green tiles paid from the hand (1 or 2), not a free pagoda placement |
+| `revolt` | `count`; yellow tiles committed from the hand, excluding a leader bonus |
+| `war` | `count`; red tiles committed from the hand, excluding a leader bonus |
+| `replace` | `count`; **also `colors: Color[]` for the bot's own exchanges**, with exactly `count` discarded colours |
+
+For example, the bot at seat 0 exchanging a red and a blue tile receives
+`{"kind":"replace","player":0,"count":2,"colors":["red","blue"]}`.
+Seat 1 instead receives only `{"kind":"replace","player":0,"count":2}`.
+An opponent's replacement colours, hand contents, private points and the actual
+bag colour counts are never read, even if an unfiltered response includes them.
+
+The adapter replays this ledger through the same `TileTracker` used during
+training. Removed board tiles remain permanently counted. Known market
+acquisitions condition the opponent-hand lower bounds; unseen hand and discard
+slots retain the trained probability model. Inventory conservation, visible
+board counts and immutable history prefixes are checked. Late joins and
+reconnects work from a complete ledger; lost polling updates do not lose events.
+
+Missing `tileHistory`, an incomplete log, an own exchange without its colours,
+or inconsistent tile totals raises `GameInformationError` before the agent
+chooses a move. The runner exits with code 2 rather than sending a pass/fallback.
+Example diagnostic: `Required game information view.tileHistory: missing field`.
 
 **War tile removal.** The game wants all `count` tiles in one action, the engine
 removes one tile per decision. The adapter runs the model `count` times on the
@@ -272,6 +336,12 @@ type Action =                                                         // what th
 
 interface PlayerView { name: string; dynasty: string; handCount: number; hand: Color[] | null; vp: VP | null }
 
+type TileEvent =
+  | { kind: 'place'; player: number; color: Color; space: number }
+  | { kind: 'market'; player: number; color: Color; slot: number }
+  | { kind: 'riot' | 'pagoda' | 'revolt' | 'war'; player: number; count: number }
+  | { kind: 'replace'; player: number; count: number; colors?: Color[] }; // colors required only for your own seat
+
 interface GameView {                // = GameState minus bag, seed and players, plus:
   options: { shortGame?: boolean };
   map: MapDef;                      // { name, rows: string[], names? }  '.' land, '~' river, 'C' capital, '#' not playable
@@ -288,6 +358,8 @@ interface GameView {                // = GameState minus bag, seed and players, 
   war: WarData | null;
   unification: number | null;
   log: LogEntry[];                  // FULL history; entries that carry points have `vp: VpGain[]`
+  logComplete: boolean;             // must be true for 5430/5467-input checkpoints
+  tileHistory?: { version: 1; complete: true; events: TileEvent[] }; // required for model 8000; schema above
   gameOver: unknown[] | null;
   lastPlaced: number[];
   bagCount: number;                 // tiles left in the hidden bag

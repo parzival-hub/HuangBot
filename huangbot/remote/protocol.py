@@ -27,6 +27,14 @@ class ShadowStateError(ValueError):
     """The game view cannot be turned into a consistent engine state."""
 
 
+class GameInformationError(ShadowStateError):
+    """Required player-visible game information is missing or inconsistent.
+
+    This is fatal: it must never be turned into a guessed observation or a
+    fallback action.
+    """
+
+
 class TranslationError(ValueError):
     """An engine action has no counterpart in the game's action format."""
 

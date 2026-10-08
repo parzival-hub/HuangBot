@@ -18,6 +18,7 @@ from huang.engine import (
 )
 
 from .protocol import ShadowStateError
+from .information import validate_view, fail
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +48,18 @@ def pagoda_ids(view: Mapping[str, Any]) -> dict[tuple[int, int, int], int]:
 def build_shadow_state(
     view: Mapping[str, Any], *, seat: int, strict: bool = False
 ) -> HuangState:
+    validate_view(view, seat)
+    try:
+        return _build_shadow_state(view, seat=seat, strict=strict)
+    except ShadowStateError as error:
+        fail("view", str(error))
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
+        fail("view", f"invalid or missing decision data ({type(error).__name__})")
+
+
+def _build_shadow_state(
+    view: Mapping[str, Any], *, seat: int, strict: bool = False
+) -> HuangState:
     """Build the engine state in which ``seat`` faces the decision of ``view``.
 
     Hidden information that the bot cannot see is replaced by placeholders that
@@ -56,7 +69,7 @@ def build_shadow_state(
     """
     players = view["players"]
     try:
-        state = HuangState(len(players), short_game=False, starting_player=-1)
+        state = HuangState(len(players), short_game=view.get("options", {}).get("shortGame", False), starting_player=-1)
     except ValueError as error:
         raise ShadowStateError(str(error)) from None
     if not 0 <= seat < len(players):
