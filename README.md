@@ -99,6 +99,13 @@ derived from publicly announced point awards, and 37 features for permanent
 tile counts, draw probabilities and uncertainty. The command-line runner also
 supports checkpoints using the original 5,410 or 5,430 input formats.
 
+## Playing in Zhanguo (remote mode)
+
+`huangbot-remote "<connect string>"` lets the bot play as an external player in the
+Zhanguo web game by polling its HTTP API once per second. It needs no OpenSpiel:
+install with `pip install --no-deps -e .` after `pip install numpy "torch>=2.9,<3"`.
+See [docs/REMOTE.md](docs/REMOTE.md) for setup, protocol and limitations.
+
 ## Bundled model
 
 `huangbot/models/best.pt` contains checkpoint **8000** from
