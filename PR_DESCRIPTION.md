@@ -36,7 +36,7 @@ Other files:
 * `pyproject.toml`: `packages = ["huang", "huangbot", "huangbot.remote"]` and the console script `huangbot-remote`.
 * `README.md`: a short pointer section.
 * `docs/REMOTE.md`: setup, usage, protocol, rule differences, limitations, findings.
-* `tests/remote/`: the new tests (about 200 test cases) and their helpers.
+* `tests/remote/`: the new tests (about 140 test cases; 25 random games by default, 300 in slow mode) and their helpers.
 * `PR_DESCRIPTION.md`: this file (delete it before merging if you prefer).
 
 ## What did not change

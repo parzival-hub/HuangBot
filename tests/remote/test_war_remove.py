@@ -55,6 +55,8 @@ def test_single_removal_needs_only_one_call():
 def test_more_removals_than_candidates_is_an_error_not_a_short_action():
     state, _ = war_state(Phase.WAR_REMOVE, red_in_winner=2, removals=3)
     view = engine_to_view(state, 0)
+    assert view["pending"]["count"] == 2  # the oracle's game clamps to the candidates
+    view["pending"]["count"] = 3  # a game that does not would ask for more than it offers
     adapter = ZhanguoAdapter(RandomAgent(), seat=0, use_score_history=True)
     with pytest.raises(NoLegalActionError):
         adapter.decide(view)
