@@ -16,9 +16,10 @@ test = ["pytest>=8"]
 [project.scripts]
 huangbot = "huangbot.cli:main"
 huang-viewer = "huang.viewer:main"
+huangbot-remote = "huangbot.remote.cli:main"
 
 [tool.setuptools]
-packages = ["huang", "huangbot"]
+packages = ["huang", "huangbot", "huangbot.remote"]
 package-dir = {huang = "huang-game-engine/huang", huangbot = "huangbot"}
 
 [tool.setuptools.package-data]
