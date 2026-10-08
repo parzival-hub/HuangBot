@@ -61,7 +61,7 @@ def play_game(players: int, short_game: bool, seed: int) -> int:
         true_actions = game_action_to_engine(state, decision.game_action, view)
         if decision.game_action["type"] == "warRemove":
             cells = decision.game_action["spaces"]
-            assert agent.calls - first_call == len(cells) == state.war.removals_remaining
+            assert agent.calls - first_call == len(cells) == view["pending"]["count"]
             assert len(set(cells)) == len(cells)
             assert set(cells) <= set(view["pending"]["candidates"])
         elif decision.game_action["type"] == "market":

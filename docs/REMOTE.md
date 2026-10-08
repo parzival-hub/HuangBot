@@ -416,7 +416,16 @@ Things found while building and testing this; none was changed in this PR.
    re-implements the arithmetic so it does not depend on an engine object.
 3. Market layout difference (see above); not fixable without changing either
    side.
-4. The oracle used by the tests encodes the assumptions of the contract
+4. `HuangState` can owe more tile removals after a war than there are red tiles
+   to remove (`removals_remaining = max strength of the losers - committed
+   tiles of the winner`, uncapped); it then removes all of them and ends the
+   war. Zhanguo's `warRemove` asks for "exactly `count` spaces from
+   `candidates`", so the bot relies on the game offering `count <= len(candidates)`.
+   If it ever sends a larger `count`, the adapter cannot fill the action, logs a
+   warning, writes a dump and sends the fallback, which is every candidate.
+   The `removals_remaining` input feature then also reads the game's (clamped)
+   count rather than the engine's.
+5. The oracle used by the tests encodes the assumptions of the contract
    (shape of `pending`, `war`, `log[*].vp`). Whether the real server agrees can
    only be shown by fixtures from the game (`test_fixtures_from_game.py`).
 

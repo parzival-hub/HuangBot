@@ -34,11 +34,24 @@ GOLDEN_ROWS = [
 AWARD = re.compile(r"^P(\d+) gained (\d+) (yellow|red|blue|green|white) VP$")
 
 
+def winning_red_cells(state: HuangState) -> list[int]:
+    war = state.war
+    return sorted(c for c in war.sides[war.winner] if state.tiles.get(c) == Color.RED)
+
+
 def compact_market(state: HuangState) -> HuangState:
-    """Copy of ``state`` whose market is compacted like the game's ``view.market``."""
+    """Copy of ``state`` as the game presents it.
+
+    The market is compacted like ``view.market``, and a pending tile removal is
+    clamped to the tiles that can be removed (the engine itself may owe more
+    removals than there are red tiles and then simply removes them all; the
+    oracle assumes the game never asks for more spaces than it offers).
+    """
     clone = state.clone()
     tiles = [color for color in clone.market if color is not None]
     clone.market = tiles + [None] * (6 - len(tiles))
+    if clone.phase == Phase.WAR_REMOVE:
+        clone.war.removals_remaining = min(clone.war.removals_remaining, len(winning_red_cells(clone)))
     return clone
 
 
@@ -152,8 +165,8 @@ def _pending(state: HuangState):
         return {
             "kind": "warRemove",
             "player": actor,
-            "count": state.war.removals_remaining,
-            "candidates": sorted(c for c in state.war.sides[state.war.winner] if state.tiles.get(c) == Color.RED),
+            "count": min(state.war.removals_remaining, len(winning_red_cells(state))),
+            "candidates": winning_red_cells(state),
         }
     raise AssertionError(f"no pending for phase {phase}")
 
